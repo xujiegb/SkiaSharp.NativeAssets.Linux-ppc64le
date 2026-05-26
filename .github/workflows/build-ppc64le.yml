@@ -418,6 +418,114 @@ jobs:
               for gn in candidates:
                   print("candidate:", gn)
               raise SystemExit(1)
+
+          print("=== Patch SkiaSharp native C API sources into libSkiaSharp target ===")
+
+          c_sources = sorted(
+              p for p in Path("src/c").glob("*.cpp")
+              if p.is_file()
+          )
+
+          if not c_sources:
+              raise SystemExit("No src/c/*.cpp files found")
+
+          c_source_lines = [f'    "src/c/{p.name}",' for p in c_sources]
+
+          build_files = [Path("BUILD.gn")] + list(Path(".").rglob("BUILD.gn")) + list(Path(".").rglob("*.gni"))
+          seen = set()
+          build_files = [p for p in build_files if not (p in seen or seen.add(p))]
+
+          target_markers = [
+              'libSkiaSharp',
+              'SkiaSharp',
+              'src/xamarin',
+              'sk_xamarin',
+              'SkiaKeeper',
+              'sk_managedstream',
+          ]
+
+          patched_c_api = False
+
+          for gn in build_files:
+              try:
+                  text = gn.read_text()
+              except UnicodeDecodeError:
+                  continue
+
+              if not any(marker in text for marker in target_markers):
+                  continue
+
+              candidates_pos = []
+              for needle in [
+                  'shared_library("SkiaSharp")',
+                  'shared_library("libSkiaSharp")',
+                  'component("SkiaSharp")',
+                  'component("libSkiaSharp")',
+                  'shared_library("skia")',
+              ]:
+                  pos = text.find(needle)
+                  if pos != -1:
+                      candidates_pos.append(pos)
+
+              if not candidates_pos and "src/xamarin" in text:
+                  candidates_pos.append(text.find("src/xamarin"))
+
+              for target_pos in candidates_pos:
+                  start = text.rfind("{", 0, target_pos)
+                  if start == -1:
+                      start = target_pos
+
+                  sources_pos = text.find("sources = [", target_pos)
+                  if sources_pos == -1:
+                      sources_pos = text.find("sources = [", start)
+
+                  if sources_pos == -1:
+                      continue
+
+                  sources_end = text.find("]", sources_pos)
+                  if sources_end == -1:
+                      continue
+
+                  target_end = text.find("\n}", sources_end)
+                  if target_end == -1:
+                      target_end = len(text)
+
+                  block = text[sources_pos:sources_end]
+                  target_block = text[target_pos:target_end]
+
+                  if not any(marker in target_block for marker in ["src/xamarin", "sk_xamarin", "SkiaKeeper", "libSkiaSharp", "SkiaSharp"]):
+                      continue
+
+                  additions = ""
+                  for line in c_source_lines:
+                      if line.strip().strip(",").strip('"') not in block and line.strip().strip(",").strip('"') not in text[sources_pos:target_end]:
+                          additions += line + "\n"
+
+                  if not additions:
+                      print(f"{gn}: src/c/*.cpp already present in selected target")
+                      patched_c_api = True
+                      break
+
+                  text = text[:sources_end] + additions + text[sources_end:]
+                  gn.write_text(text)
+                  print(f"patched {gn}: added {len(additions.splitlines())} src/c/*.cpp files into libSkiaSharp target")
+                  patched_c_api = True
+                  break
+
+              if patched_c_api:
+                  break
+
+          if not patched_c_api:
+              print("Failed to patch libSkiaSharp target automatically.")
+              print("Candidate files containing SkiaSharp/xamarin markers:")
+              for gn in build_files:
+                  try:
+                      text = gn.read_text()
+                  except UnicodeDecodeError:
+                      continue
+                  if any(marker in text for marker in target_markers):
+                      print("candidate:", gn)
+              raise SystemExit(1)
           PY
 
           echo "=== grep wrapper BUILD/GNI files after patch ==="

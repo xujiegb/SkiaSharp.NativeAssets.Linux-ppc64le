@@ -372,13 +372,35 @@ jobs:
         run: |
           set -euo pipefail
 
-          find src -name 'libSkiaSharp.so' -type f -print
+          echo "==== candidate libSkiaSharp.so files ===="
+          find src -name 'libSkiaSharp.so' -type f -print | while read -r so; do
+            echo "--- $so"
+            file "$so" || true
+            powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null \
+              | grep -E 'sk_colortype_get_default_8888|sk_colortype_get_default_565|sk_imageinfo_new' || true
+          done
 
-          LIB="$(find src -name 'libSkiaSharp.so' -type f | head -n 1)"
+          LIB="$(
+            find src -name 'libSkiaSharp.so' -type f -print | while read -r so; do
+              if powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_8888' &&
+                 powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_565' &&
+                 powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_imageinfo_new'; then
+                echo "$so"
+                break
+              fi
+            done
+          )"
+
           if [[ -z "$LIB" ]]; then
-            echo "libSkiaSharp.so not found"
+            echo "No valid libSkiaSharp.so exports required SkiaSharp C API symbols."
+            echo "Required:"
+            echo "  sk_colortype_get_default_8888"
+            echo "  sk_colortype_get_default_565"
+            echo "  sk_imageinfo_new"
             exit 1
           fi
+
+          echo "Selected libSkiaSharp.so: $LIB"
 
           mkdir -p "pkg/runtimes/${RID}/native"
           cp "$LIB" "pkg/runtimes/${RID}/native/libSkiaSharp.so"

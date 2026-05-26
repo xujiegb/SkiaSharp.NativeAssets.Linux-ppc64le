@@ -3,12 +3,8 @@ name: build SkiaSharp.NativeAssets.Linux ppc64le
 on:
   workflow_dispatch:
     inputs:
-      skiasharp_ref:
-        description: "SkiaSharp version/ref, e.g. v3.119.4-preview.1.1, 3.119.4-preview.1.1, main"
-        required: true
-        default: "3.119.4-preview.1.1"
-      release_tag:
-        description: "Release tag to upload nupkg, e.g. 3.119.4-preview.1.1"
+      version:
+        description: "SkiaSharp version, e.g. 3.119.4-preview.1.1"
         required: true
         default: "3.119.4-preview.1.1"
 
@@ -29,6 +25,7 @@ jobs:
       AR: powerpc64le-linux-gnu-ar
       STRIP: powerpc64le-linux-gnu-strip
       PKG_ID: SkiaSharp.NativeAssets.Linux
+      FIXED_NUPKG_NAME: SkiaSharp.NativeAssets.Linux.ppc64le.nupkg
       DOTNET_ROOT: /root/.dotnet
       PATH: /root/.dotnet:/root/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -150,23 +147,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          REF="${{ inputs.skiasharp_ref }}"
-          if [[ "$REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-            GIT_REF="v$REF"
-            VERSION="$REF"
-          elif [[ "$REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
-            GIT_REF="$REF"
-            VERSION="${BASH_REMATCH[1]}"
-          else
-            GIT_REF="$REF"
-            VERSION="0.0.0-${REF//\//-}"
-          fi
+          VERSION="${{ inputs.version }}"
+          GIT_REF="v${VERSION}"
 
-          PACKAGE_VERSION="$VERSION"
-
-          echo "git_ref=$GIT_REF" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "git_ref=${GIT_REF}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "package_version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Clone SkiaSharp
         run: |
@@ -219,46 +206,10 @@ jobs:
 
           test -f third_party/externals/icu/scripts/make_data_assembly.py
 
-          echo "=== source grep for copyInvariantChars ==="
-          grep -R "copyInvariantChars" -n third_party/externals/icu/source || true
-
-          echo "=== source grep for FixedString / ByteSink ==="
-          grep -R "class FixedString\|struct FixedString\|using FixedString\|typedef.*FixedString\|FixedString" -n third_party/externals/icu/source || true
-          grep -R "class ByteSink\|struct ByteSink\|ByteSink" -n third_party/externals/icu/source/common third_party/externals/icu/source/i18n || true
-
-          echo "=== source grep headers/cpps around copyInvariantChars ==="
-          find third_party/externals/icu/source \
-            \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
-            -print | while read -r f; do
-              if grep -q "copyInvariantChars" "$f"; then
-                echo "--- $f"
-                grep -n -C 5 "copyInvariantChars" "$f" || true
-              fi
-            done
-
           python3 - <<'PY'
           from pathlib import Path
 
-          print("=== libpng GN candidates ===")
           gn_files = list(Path(".").rglob("BUILD.gn")) + list(Path(".").rglob("*.gni"))
-          for p in gn_files:
-              try:
-                  text = p.read_text()
-              except UnicodeDecodeError:
-                  continue
-
-              if "pngrutil.c" in text or "pngread.c" in text or "png.c" in text or "libpng" in text:
-                  print("candidate:", p)
-                  for i, line in enumerate(text.splitlines(), 1):
-                      if (
-                          "pngrutil.c" in line
-                          or "pngread.c" in line
-                          or "png.c" in line
-                          or "powerpc_init.c" in line
-                          or "filter_vsx_intrinsics.c" in line
-                          or "PNG_POWERPC_VSX_OPT" in line
-                      ):
-                          print(f"{p}:{i}: {line}")
 
           png_gn = Path("third_party/libpng/BUILD.gn")
           if png_gn.exists():
@@ -294,26 +245,6 @@ jobs:
                   raise SystemExit("libpng pngrutil.c marker missing")
           else:
               raise SystemExit("third_party/libpng/BUILD.gn not found")
-
-          print("=== after libpng patch file dump ===")
-          for p in gn_files:
-              try:
-                  text = p.read_text()
-              except UnicodeDecodeError:
-                  continue
-
-              if "pngrutil.c" in text or "powerpc_init.c" in text or "filter_vsx_intrinsics.c" in text or "PNG_POWERPC_VSX_OPT" in text:
-                  print("candidate:", p)
-                  for i, line in enumerate(text.splitlines(), 1):
-                      if (
-                          "pngrutil.c" in line
-                          or "pngread.c" in line
-                          or "png.c" in line
-                          or "powerpc_init.c" in line
-                          or "filter_vsx_intrinsics.c" in line
-                          or "PNG_POWERPC_VSX_OPT" in line
-                      ):
-                          print(f"{p}:{i}: {line}")
 
           needed_names = [
               "charstr.cpp",
@@ -361,10 +292,6 @@ jobs:
               if p.exists():
                   existing.append(f"//{p.as_posix()}")
 
-          print("ICU extra sources:")
-          for p in existing:
-              print(p)
-
           markers = [
               "loclikely.cpp",
               "uloc_keytype.cpp",
@@ -385,15 +312,6 @@ jobs:
 
           if not candidates:
               print("No direct BUILD.gn/.gni target containing ICU marker sources found.")
-              print("Possible ICU/skunicode files:")
-              for gn in files:
-                  try:
-                      text = gn.read_text()
-                  except UnicodeDecodeError:
-                      continue
-                  low = text.lower()
-                  if "icu" in low or "skunicode" in low:
-                      print("candidate:", gn)
               raise SystemExit(1)
 
           patched = False
@@ -445,141 +363,6 @@ jobs:
           python3 bin/fetch-gn
           ./bin/gn gen ../../out/linux-ppc64le --args="$GN_ARGS"
 
-          echo "=== probe generated ninja files ==="
-          grep -R "powerpc_init.c" -n ../../out/linux-ppc64le || true
-          grep -R "filter_vsx_intrinsics.c" -n ../../out/linux-ppc64le || true
-          grep -R "png_init_filter_functions_vsx" -n ../../out/linux-ppc64le || true
-          grep -R "loclikelysubtags.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "likelysubtags.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "charstr.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "charstrmap.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "fixedstring.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "copyInvariantChars" -n ../../out/linux-ppc64le || true
-          grep -R "emojiprops.cpp" -n ../../out/linux-ppc64le || true
-          grep -R "lstmbe.cpp" -n ../../out/linux-ppc64le || true
-
-          echo "=== probe response files ==="
-          find ../../out/linux-ppc64le -name '*.rsp' -print | while read -r f; do
-            if grep -qE 'powerpc_init|filter_vsx|png_init_filter_functions_vsx|loclikelysubtags|likelysubtags|charstr|charstrmap|fixedstring|copyInvariantChars|emojiprops|lstmbe|loclikely|uloc_keytype|characterproperties' "$f"; then
-              echo "--- $f"
-              grep -E 'powerpc_init|filter_vsx|png_init_filter_functions_vsx|loclikelysubtags|likelysubtags|charstr|charstrmap|fixedstring|copyInvariantChars|emojiprops|lstmbe|loclikely|uloc_keytype|characterproperties' "$f" || true
-            fi
-          done
-
-          echo "=== probe bundled libpng / icu BUILD files ==="
-          grep -R "powerpc_init.c\|filter_vsx_intrinsics.c\|PNG_POWERPC_VSX_OPT" -n third_party/libpng third_party/externals/libpng || true
-          grep -R "pngrutil.c\|pngread.c\|png.c" -n . --include='BUILD.gn' --include='*.gni' || true
-          grep -R "loclikelysubtags.cpp\|likelysubtags.cpp\|charstr.cpp\|charstrmap.cpp\|fixedstring.cpp\|copyInvariantChars\|emojiprops.cpp\|lstmbe.cpp\|loclikely.cpp\|uloc_keytype.cpp\|characterproperties.cpp" -n . --include='BUILD.gn' --include='*.gni' || true
-
-          echo "=== probe ninja targets ==="
-          ninja -C ../../out/linux-ppc64le -t targets all | grep -E 'libpng|icu|skunicode|SkiaSharp|HarfBuzzSharp' || true
-
-          echo "=== prebuild key static libraries for symbol probe ==="
-          ninja -C ../../out/linux-ppc64le libpng.a libicu.a libskunicode.a -j1 -v || true
-
-          echo "=== locate key static libraries ==="
-          find ../../out/linux-ppc64le \
-            \( -name 'libpng.a' -o -name 'libicu.a' -o -name 'libskunicode.a' \) \
-            -print -exec file {} \; || true
-
-          echo "=== archive members probe ==="
-          for a in \
-            ../../out/linux-ppc64le/libpng.a \
-            ../../out/linux-ppc64le/libicu.a \
-            ../../out/linux-ppc64le/libskunicode.a
-          do
-            if [ -f "$a" ]; then
-              echo "--- ar t $a"
-              powerpc64le-linux-gnu-ar t "$a" | grep -E 'powerpc|filter_vsx|charstr|charstrmap|fixedstring|loclikely|loclikelysubtags|emojiprops|lstmbe|uloc_keytype|characterproperties' || true
-            else
-              echo "missing archive: $a"
-            fi
-          done
-
-          echo "=== nm probe libpng defined symbols ==="
-          if [ -f ../../out/linux-ppc64le/libpng.a ]; then
-            powerpc64le-linux-gnu-nm -A -C ../../out/linux-ppc64le/libpng.a \
-              | grep -E 'png_init_filter_functions_vsx|png_read_filter_row' || true
-          fi
-
-          echo "=== nm probe libicu defined/undefined symbols ==="
-          if [ -f ../../out/linux-ppc64le/libicu.a ]; then
-            echo "--- libicu defined"
-            powerpc64le-linux-gnu-nm -A -C --defined-only ../../out/linux-ppc64le/libicu.a \
-              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|FixedString|ByteSink' || true
-
-            echo "--- libicu undefined"
-            powerpc64le-linux-gnu-nm -A -C -u ../../out/linux-ppc64le/libicu.a \
-              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|FixedString|ByteSink' || true
-          fi
-
-          echo "=== nm probe libskunicode symbols ==="
-          if [ -f ../../out/linux-ppc64le/libskunicode.a ]; then
-            echo "--- libskunicode defined"
-            powerpc64le-linux-gnu-nm -A -C --defined-only ../../out/linux-ppc64le/libskunicode.a \
-              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|ulocimp_addLikelySubtags|png_init_filter_functions_vsx|FixedString|ByteSink' || true
-
-            echo "--- libskunicode undefined"
-            powerpc64le-linux-gnu-nm -A -C -u ../../out/linux-ppc64le/libskunicode.a \
-              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|png_init_filter_functions_vsx|FixedString|ByteSink' || true
-          fi
-
-          echo "=== nm probe all objects for provider ==="
-          provider_found=0
-          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
-            if powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null | grep -qE 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx'; then
-              echo "--- provider object: $o"
-              powerpc64le-linux-gnu-nm -C --defined-only "$o" \
-                | grep -E 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx' || true
-            fi
-          done
-
-          echo "=== direct provider count for copyInvariantChars ==="
-          copy_provider_count="$(
-            {
-              find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
-                powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null \
-                  | grep -E 'copyInvariantChars' \
-                  | sed "s#^#$o: #" || true
-              done
-            } | tee /tmp/copyInvariantChars.providers | wc -l
-          )"
-          cat /tmp/copyInvariantChars.providers || true
-          echo "copyInvariantChars provider count: ${copy_provider_count}"
-          if [ "${copy_provider_count}" = "0" ]; then
-            echo "NO copyInvariantChars provider found in generated object files"
-          fi
-
-          echo "=== nm probe all objects for unresolved refs ==="
-          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
-            if powerpc64le-linux-gnu-nm -C -u "$o" 2>/dev/null | grep -qE 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx'; then
-              echo "--- undefined object: $o"
-              powerpc64le-linux-gnu-nm -C -u "$o" \
-                | grep -E 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx' || true
-            fi
-          done
-
-          echo "=== direct undefined count for copyInvariantChars ==="
-          copy_undefined_count="$(
-            {
-              find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
-                powerpc64le-linux-gnu-nm -C -u "$o" 2>/dev/null \
-                  | grep -E 'copyInvariantChars' \
-                  | sed "s#^#$o: #" || true
-              done
-            } | tee /tmp/copyInvariantChars.undefined | wc -l
-          )"
-          cat /tmp/copyInvariantChars.undefined || true
-          echo "copyInvariantChars undefined count: ${copy_undefined_count}"
-
-          echo "=== libSkiaSharp response file probe ==="
-          if [ -f ../../out/linux-ppc64le/libSkiaSharp.so.rsp ]; then
-            tr ' ' '\n' < ../../out/linux-ppc64le/libSkiaSharp.so.rsp \
-              | grep -E 'libpng|libicu|libskunicode|png|icu|skunicode|charstr|charstrmap|fixedstring|copyInvariantChars|loclikely|loclikelysubtags|emojiprops|lstmbe' || true
-          else
-            echo "libSkiaSharp.so.rsp not found yet"
-          fi
-
           echo "=== final build ==="
           ninja -C ../../out/linux-ppc64le -j1 -v
 
@@ -588,6 +371,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           find src -name 'libSkiaSharp.so' -type f -print
 
           LIB="$(find src -name 'libSkiaSharp.so' -type f | head -n 1)"
@@ -641,15 +425,26 @@ jobs:
             --output ../artifacts \
             --verbosity normal
 
+          cd ..
+          real_nupkg="$(find artifacts -maxdepth 1 -name "${PKG_ID}.*.nupkg" | head -n1)"
+          test -n "$real_nupkg"
+
+          cp -f "$real_nupkg" "artifacts/${FIXED_NUPKG_NAME}"
+
+          echo "==== artifacts ===="
+          ls -lh artifacts
+
       - name: Upload nupkg artifact
         uses: actions/upload-artifact@v6
         with:
-          name: SkiaSharp.NativeAssets.Linux-${{ steps.meta.outputs.package_version }}
-          path: artifacts/*.nupkg
+          name: SkiaSharp.NativeAssets.Linux.ppc64le-${{ steps.meta.outputs.package_version }}
+          path: artifacts/SkiaSharp.NativeAssets.Linux.ppc64le.nupkg
 
-      - name: Publish to GitHub Packages
-        if: inputs.publish_github_packages == true
-        run: |
-          dotnet nuget push "artifacts/*.nupkg" \
-            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
-            --api-key "${{ secrets.GITHUB_TOKEN }}" 这个改为release nupkg吧，填入什么版本号，版本号就是什么，nupkg是SkiaSharp.NativeAssets.Linux.ppc64le.nupkg 其他结构不要动，贴出完整版
+      - name: Upload nupkg to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.release_tag }}
+          name: ${{ steps.meta.outputs.release_tag }}
+          files: artifacts/SkiaSharp.NativeAssets.Linux.ppc64le.nupkg
+          prerelease: true
+          make_latest: false

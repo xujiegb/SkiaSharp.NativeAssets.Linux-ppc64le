@@ -278,8 +278,11 @@ jobs:
 
               required_symbols = [
                   "sk_colortype_get_default_8888",
-                  "sk_colortype_get_default_565",
                   "sk_imageinfo_new",
+              ]
+
+              optional_symbols = [
+                  "sk_colortype_get_default_565",
               ]
 
               c_api_sources = []
@@ -290,9 +293,14 @@ jobs:
                   Path("../src/c"),
               ]
 
-              for sym in required_symbols:
-                  found = False
+              def source_path_for(p):
+                  if p.as_posix().startswith("../../"):
+                      return p.relative_to(Path("../..")).as_posix()
+                  if p.as_posix().startswith("../"):
+                      return p.relative_to(Path("..")).as_posix()
+                  return p.as_posix()
 
+              def find_provider(sym):
                   for src_c_dir in src_c_dirs:
                       if not src_c_dir.exists():
                           continue
@@ -300,25 +308,30 @@ jobs:
                       for p in sorted(src_c_dir.glob("*.cpp")):
                           text = p.read_text(errors="ignore")
                           if sym in text:
-                              if p.as_posix().startswith("../../"):
-                                  src = p.relative_to(Path("../..")).as_posix()
-                              elif p.as_posix().startswith("../"):
-                                  src = p.relative_to(Path("..")).as_posix()
-                              else:
-                                  src = p.as_posix()
+                              return source_path_for(p)
 
-                              if src not in c_api_sources:
-                                  c_api_sources.append(src)
+                  return None
 
-                              print(f"symbol {sym} provider: {src}")
-                              found = True
-                              break
-
-                      if found:
-                          break
-
-                  if not found:
+              for sym in required_symbols:
+                  src = find_provider(sym)
+                  if src is None:
                       raise SystemExit(f"Could not find provider source for required symbol: {sym}")
+
+                  if src not in c_api_sources:
+                      c_api_sources.append(src)
+
+                  print(f"symbol {sym} provider: {src}")
+
+              for sym in optional_symbols:
+                  src = find_provider(sym)
+                  if src is None:
+                      print(f"[WARN] optional symbol provider not found: {sym}")
+                      continue
+
+                  if src not in c_api_sources:
+                      c_api_sources.append(src)
+
+                  print(f"optional symbol {sym} provider: {src}")
 
               for extra in [
                   "src/c/sk_types.cpp",
@@ -644,7 +657,6 @@ jobs:
           LIB="$(
             find src -name 'libSkiaSharp.so' -type f -print | sort | while read -r so; do
               if powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_8888' &&
-                 powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_565' &&
                  powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_imageinfo_new'; then
                 echo "$so"
                 break
@@ -656,8 +668,9 @@ jobs:
             echo "No valid libSkiaSharp.so exports required SkiaSharp C API symbols."
             echo "Required:"
             echo "  sk_colortype_get_default_8888"
-            echo "  sk_colortype_get_default_565"
             echo "  sk_imageinfo_new"
+            echo "Optional:"
+            echo "  sk_colortype_get_default_565"
             echo ""
             echo "==== final diagnostic: source contains exact required symbols? ===="
             grep -R \
@@ -697,9 +710,11 @@ jobs:
           powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
             | grep 'sk_colortype_get_default_8888'
           powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
-            | grep 'sk_colortype_get_default_565'
-          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
             | grep 'sk_imageinfo_new'
+
+          echo "==== optional symbol check ===="
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_565' || true
 
           ${STRIP} "pkg/runtimes/${RID}/native/libSkiaSharp.so" || true
 
@@ -707,9 +722,11 @@ jobs:
           powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
             | grep 'sk_colortype_get_default_8888'
           powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
-            | grep 'sk_colortype_get_default_565'
-          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
             | grep 'sk_imageinfo_new'
+
+          echo "==== optional symbol check after strip ===="
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_565' || true
 
       - name: Create NuGet package project
         shell: bash

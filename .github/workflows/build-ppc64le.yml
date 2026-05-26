@@ -276,11 +276,60 @@ jobs:
               candidate_files += sorted(Path(".").rglob("BUILD.gn"))
               candidate_files += sorted(Path(".").rglob("*.gni"))
 
-              c_api_sources = [
-                  "src/c/sk_general.cpp",
-                  "src/c/sk_imageinfo.cpp",
-                  "src/c/sk_types.cpp",
+              required_symbols = [
+                  "sk_colortype_get_default_8888",
+                  "sk_colortype_get_default_565",
+                  "sk_imageinfo_new",
               ]
+
+              c_api_sources = []
+
+              src_c_dirs = [
+                  Path("src/c"),
+                  Path("../../src/c"),
+                  Path("../src/c"),
+              ]
+
+              for sym in required_symbols:
+                  found = False
+
+                  for src_c_dir in src_c_dirs:
+                      if not src_c_dir.exists():
+                          continue
+
+                      for p in sorted(src_c_dir.glob("*.cpp")):
+                          text = p.read_text(errors="ignore")
+                          if sym in text:
+                              if p.as_posix().startswith("../../"):
+                                  src = p.relative_to(Path("../..")).as_posix()
+                              elif p.as_posix().startswith("../"):
+                                  src = p.relative_to(Path("..")).as_posix()
+                              else:
+                                  src = p.as_posix()
+
+                              if src not in c_api_sources:
+                                  c_api_sources.append(src)
+
+                              print(f"symbol {sym} provider: {src}")
+                              found = True
+                              break
+
+                      if found:
+                          break
+
+                  if not found:
+                      raise SystemExit(f"Could not find provider source for required symbol: {sym}")
+
+              for extra in [
+                  "src/c/sk_types.cpp",
+                  "src/c/sk_structs.cpp",
+              ]:
+                  if Path(extra).exists() and extra not in c_api_sources:
+                      c_api_sources.append(extra)
+
+              print("SkiaSharp C API sources to inject:")
+              for src in c_api_sources:
+                  print("  " + src)
 
               markers = [
                   '"src/xamarin/SkiaKeeper.c"',

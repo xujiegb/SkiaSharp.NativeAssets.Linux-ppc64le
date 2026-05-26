@@ -7,15 +7,14 @@ on:
         description: "SkiaSharp version/ref, e.g. v3.119.2, 3.119.2, main"
         required: true
         default: "v3.119.2"
-      publish_github_packages:
-        description: "Publish to GitHub Packages"
+      publish_release_zip:
+        description: "Publish zip to GitHub Release"
         required: true
         type: boolean
         default: true
 
 permissions:
-  contents: read
-  packages: write
+  contents: write
 
 jobs:
   build:
@@ -164,11 +163,11 @@ jobs:
             VERSION="0.0.0-${REF//\//-}"
           fi
 
-          PACKAGE_VERSION="$VERSION"
+          RELEASE_TAG="$VERSION"
 
           echo "git_ref=$GIT_REF" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Clone SkiaSharp
         run: |
@@ -605,53 +604,34 @@ jobs:
           file "pkg/runtimes/${RID}/native/libSkiaSharp.so"
           powerpc64le-linux-gnu-readelf -h "pkg/runtimes/${RID}/native/libSkiaSharp.so"
 
-      - name: Create NuGet package project
+      - name: Create release zip
         shell: bash
         run: |
           set -euo pipefail
 
-          cat > pkg/${PKG_ID}.csproj <<EOF
-          <Project Sdk="Microsoft.NET.Sdk">
-            <PropertyGroup>
-              <TargetFramework>net6.0</TargetFramework>
-              <PackageId>${PKG_ID}</PackageId>
-              <Version>${{ steps.meta.outputs.package_version }}</Version>
-              <Authors>Repobot</Authors>
-              <Company>${{ github.repository_owner }}</Company>
-              <PackageLicenseExpression>MIT</PackageLicenseExpression>
-              <PackageProjectUrl>https://github.com/mono/SkiaSharp</PackageProjectUrl>
-              <Description>Unofficial SkiaSharp Linux native assets for linux-ppc64le, built from mono/SkiaSharp ${{ steps.meta.outputs.git_ref }}.</Description>
-              <PackageTags>skiasharp skia native linux ppc64le powerpc</PackageTags>
-              <RepositoryType>git</RepositoryType>
-              <RepositoryUrl>https://github.com/mono/SkiaSharp</RepositoryUrl>
-              <RepositoryCommit>$(cd src && git rev-parse HEAD)</RepositoryCommit>
-              <IncludeBuildOutput>false</IncludeBuildOutput>
-              <NoBuild>true</NoBuild>
-            </PropertyGroup>
-
-            <ItemGroup>
-              <None Include="runtimes/linux-ppc64le/native/libSkiaSharp.so"
-                    Pack="true"
-                    PackagePath="runtimes/linux-ppc64le/native/libSkiaSharp.so" />
-            </ItemGroup>
-          </Project>
-          EOF
+          mkdir -p artifacts
 
           cd pkg
-          dotnet pack ${PKG_ID}.csproj \
-            --configuration Release \
-            --output ../artifacts \
-            --verbosity normal
+          zip -r "../artifacts/SkiaSharp.NativeAssets.Linux.zip" \
+            "runtimes/${RID}/native/libSkiaSharp.so"
 
-      - name: Upload nupkg artifact
+          cd ..
+          unzip -l artifacts/SkiaSharp.NativeAssets.Linux.zip
+
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v6
         with:
-          name: SkiaSharp.NativeAssets.Linux-${{ steps.meta.outputs.package_version }}
-          path: artifacts/*.nupkg
+          name: SkiaSharp.NativeAssets.Linux-${{ steps.meta.outputs.version }}
+          path: artifacts/SkiaSharp.NativeAssets.Linux.zip
 
-      - name: Publish to GitHub Packages
-        if: inputs.publish_github_packages == true
-        run: |
-          dotnet nuget push "artifacts/*.nupkg" \
-            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
-            --api-key "${{ secrets.GITHUB_TOKEN }}"
+      - name: Publish zip to GitHub Release
+        if: inputs.publish_release_zip == true
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: artifacts/SkiaSharp.NativeAssets.Linux.zip
+          asset_name: SkiaSharp.NativeAssets.Linux.zip
+          tag: ${{ steps.meta.outputs.release_tag }}
+          release_name: SkiaSharp.NativeAssets.Linux ${{ steps.meta.outputs.version }}
+          overwrite: true
+          prerelease: true

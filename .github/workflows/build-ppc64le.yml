@@ -206,29 +206,49 @@ jobs:
 
           test -f third_party/externals/icu/scripts/make_data_assembly.py
 
-          echo "=== probe SkiaSharp wrapper source locations ==="
-          find .. ../.. . \
-            -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
-            -print | grep -Ei 'SkiaSharp|sk_colortype|get_default_8888|sk_imageinfo|xamarin' || true
+          echo "=== source tree position ==="
+          pwd
+          echo "=== parent tree ==="
+          ls -la ..
+          ls -la ../.. || true
 
-          echo "=== grep required SkiaSharp C API symbols in source tree ==="
-          grep -R "sk_colortype_get_default_8888\|sk_colortype_get_default_565\|sk_imageinfo_new" -n .. ../.. . || true
+          echo "=== list SkiaSharp xamarin wrapper tree ==="
+          find ../../src/xamarin ../src/xamarin src/xamarin \
+            -maxdepth 5 -type f 2>/dev/null | sort || true
 
-          echo "=== grep possible wrapper BUILD/GNI files ==="
-          find .. ../.. . \
+          echo "=== grep exact required C API symbols in whole SkiaSharp checkout ==="
+          grep -R \
+            -e "sk_colortype_get_default_8888" \
+            -e "sk_colortype_get_default_565" \
+            -e "sk_imageinfo_new" \
+            -n ../.. .. . 2>/dev/null || true
+
+          echo "=== grep near symbols: colortype / imageinfo / SKImageInfo ==="
+          grep -R \
+            -e "colortype_get_default" \
+            -e "sk_colortype" \
+            -e "sk_imageinfo" \
+            -e "SKImageInfo" \
+            -n ../../src ../src src 2>/dev/null || true
+
+          echo "=== grep wrapper exports/macros ==="
+          grep -R \
+            -e "SK_C_API" \
+            -e "SK_API" \
+            -e "SK_X_API" \
+            -e "SKIA_C_PLUS_PLUS_BEGIN_GUARD" \
+            -e "extern \"C\"" \
+            -n ../../src/xamarin ../src/xamarin src/xamarin 2>/dev/null || true
+
+          echo "=== grep wrapper BUILD/GNI files before patch ==="
+          find ../.. .. . \
             -type f \( -name 'BUILD.gn' -o -name '*.gni' -o -name '*.gn' \) \
-            -print | while read -r f; do
-              if grep -qE 'libSkiaSharp|sk_xamarin|sk_colortype|sk_imageinfo|src/xamarin|SkiaSharp' "$f"; then
+            -print | sort | while read -r f; do
+              if grep -qE 'libSkiaSharp|sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|xamarin|sk_imageinfo|sk_colortype|colortype' "$f"; then
                 echo "--- $f"
-                grep -n -C 5 -E 'libSkiaSharp|sk_xamarin|sk_colortype|sk_imageinfo|src/xamarin|SkiaSharp|sources = \[' "$f" || true
+                grep -n -C 8 -E 'libSkiaSharp|sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|xamarin|sk_imageinfo|sk_colortype|colortype|sources = \[|shared_library|component' "$f" || true
               fi
             done
-
-          echo "=== list src/xamarin if present ==="
-          find .. ../.. . -path '*src/xamarin*' -maxdepth 20 -type f -print || true
-
-          echo "=== grep xamarin source symbols ==="
-          grep -R "sk_colortype_get_default_8888\|sk_colortype_get_default_565\|sk_imageinfo_new" -n ../src/xamarin ../../src/xamarin src/xamarin 2>/dev/null || true
 
           python3 - <<'PY'
           from pathlib import Path
@@ -384,28 +404,58 @@ jobs:
               raise SystemExit(1)
           PY
 
+          echo "=== grep wrapper BUILD/GNI files after patch ==="
+          find ../.. .. . \
+            -type f \( -name 'BUILD.gn' -o -name '*.gni' -o -name '*.gn' \) \
+            -print | sort | while read -r f; do
+              if grep -qE 'libSkiaSharp|sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|xamarin|sk_imageinfo|sk_colortype|colortype' "$f"; then
+                echo "--- $f"
+                grep -n -C 8 -E 'libSkiaSharp|sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|xamarin|sk_imageinfo|sk_colortype|colortype|sources = \[|shared_library|component' "$f" || true
+              fi
+            done
+
           python3 bin/fetch-gn
           ./bin/gn gen ../../out/linux-ppc64le --args="$GN_ARGS"
 
-          echo "=== probe generated ninja targets for SkiaSharp wrapper ==="
+          echo "=== generated ninja targets for SkiaSharp wrapper ==="
           ninja -C ../../out/linux-ppc64le -t targets all \
-            | grep -E 'libSkiaSharp|sk_xamarin|sk_colortype|sk_imageinfo|xamarin|SkiaSharp' || true
+            | grep -E 'libSkiaSharp|sk_xamarin|sk_compatpaint|SkiaKeeper|xamarin|SkiaSharp|imageinfo|colortype' || true
 
-          echo "=== probe generated ninja/rsp files for required symbols and wrapper objects ==="
-          grep -R "sk_colortype_get_default_8888\|sk_colortype_get_default_565\|sk_imageinfo_new\|sk_xamarin\|src/xamarin" -n ../../out/linux-ppc64le || true
+          echo "=== generated ninja files: wrapper source references ==="
+          grep -R \
+            -e "sk_xamarin" \
+            -e "sk_compatpaint" \
+            -e "SkiaKeeper" \
+            -e "src/xamarin" \
+            -e "libSkiaSharp" \
+            -e "sk_imageinfo" \
+            -e "sk_colortype" \
+            -e "colortype_get_default" \
+            -n ../../out/linux-ppc64le 2>/dev/null || true
 
-          find ../../out/linux-ppc64le -name '*.rsp' -print | while read -r f; do
-            if grep -qE 'sk_xamarin|sk_colortype|sk_imageinfo|src/xamarin|libSkiaSharp' "$f"; then
+          echo "=== generated rsp files for libSkiaSharp / wrapper ==="
+          find ../../out/linux-ppc64le -name '*.rsp' -print | sort | while read -r f; do
+            if grep -qE 'sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|libSkiaSharp|sk_imageinfo|sk_colortype|colortype' "$f"; then
               echo "--- $f"
-              tr ' ' '\n' < "$f" | grep -E 'sk_xamarin|sk_colortype|sk_imageinfo|src/xamarin|libSkiaSharp' || true
+              tr ' ' '\n' < "$f" | grep -E 'sk_xamarin|sk_compatpaint|SkiaKeeper|src/xamarin|libSkiaSharp|sk_imageinfo|sk_colortype|colortype' || true
             fi
           done
 
           echo "=== final build ==="
           ninja -C ../../out/linux-ppc64le -j1 -v
 
-          echo "=== post-build object provider probe for required C API symbols ==="
-          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+          echo "=== built libSkiaSharp.so candidates under out ==="
+          find ../../out/linux-ppc64le -name 'libSkiaSharp.so' -type f -print | while read -r so; do
+            echo "--- $so"
+            file "$so" || true
+            powerpc64le-linux-gnu-readelf -h "$so" || true
+            echo "--- exported required / near symbols"
+            powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null \
+              | grep -E 'sk_colortype_get_default_8888|sk_colortype_get_default_565|sk_imageinfo_new|sk_colortype|sk_imageinfo|SKImageInfo' || true
+          done
+
+          echo "=== post-build object provider probe for exact required C API symbols ==="
+          find ../../out/linux-ppc64le/obj -name '*.o' -print | sort | while read -r o; do
             if powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null \
               | grep -qE 'sk_colortype_get_default_8888|sk_colortype_get_default_565|sk_imageinfo_new'; then
               echo "--- provider object: $o"
@@ -414,8 +464,18 @@ jobs:
             fi
           done
 
-          echo "=== post-build unresolved probe for required C API symbols ==="
-          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+          echo "=== post-build object provider probe for near C API symbols ==="
+          find ../../out/linux-ppc64le/obj -name '*.o' -print | sort | while read -r o; do
+            if powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null \
+              | grep -qE 'sk_colortype|sk_imageinfo|SKImageInfo|colortype_get_default'; then
+              echo "--- near provider object: $o"
+              powerpc64le-linux-gnu-nm -C --defined-only "$o" \
+                | grep -E 'sk_colortype|sk_imageinfo|SKImageInfo|colortype_get_default' || true
+            fi
+          done
+
+          echo "=== post-build unresolved probe for exact required C API symbols ==="
+          find ../../out/linux-ppc64le/obj -name '*.o' -print | sort | while read -r o; do
             if powerpc64le-linux-gnu-nm -C -u "$o" 2>/dev/null \
               | grep -qE 'sk_colortype_get_default_8888|sk_colortype_get_default_565|sk_imageinfo_new'; then
               echo "--- undefined object: $o"
@@ -431,15 +491,20 @@ jobs:
           set -euo pipefail
 
           echo "==== candidate libSkiaSharp.so files ===="
-          find src -name 'libSkiaSharp.so' -type f -print | while read -r so; do
+          find src -name 'libSkiaSharp.so' -type f -print | sort | while read -r so; do
             echo "--- $so"
             file "$so" || true
+            powerpc64le-linux-gnu-readelf -h "$so" || true
+            echo "--- exact required symbols"
             powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null \
               | grep -E 'sk_colortype_get_default_8888|sk_colortype_get_default_565|sk_imageinfo_new' || true
+            echo "--- near exported symbols"
+            powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null \
+              | grep -E 'sk_colortype|sk_imageinfo|SKImageInfo|colortype_get_default' || true
           done
 
           LIB="$(
-            find src -name 'libSkiaSharp.so' -type f -print | while read -r so; do
+            find src -name 'libSkiaSharp.so' -type f -print | sort | while read -r so; do
               if powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_8888' &&
                  powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_colortype_get_default_565' &&
                  powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null | grep -q 'sk_imageinfo_new'; then
@@ -455,6 +520,20 @@ jobs:
             echo "  sk_colortype_get_default_8888"
             echo "  sk_colortype_get_default_565"
             echo "  sk_imageinfo_new"
+            echo ""
+            echo "==== final diagnostic: source contains exact required symbols? ===="
+            grep -R \
+              -e "sk_colortype_get_default_8888" \
+              -e "sk_colortype_get_default_565" \
+              -e "sk_imageinfo_new" \
+              -n src 2>/dev/null || true
+            echo ""
+            echo "==== final diagnostic: all exported sk_colortype/sk_imageinfo symbols from candidates ===="
+            find src -name 'libSkiaSharp.so' -type f -print | sort | while read -r so; do
+              echo "--- $so"
+              powerpc64le-linux-gnu-nm -D "$so" 2>/dev/null \
+                | grep -E 'sk_colortype|sk_imageinfo|SKImageInfo|colortype_get_default' || true
+            done
             exit 1
           fi
 

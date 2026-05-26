@@ -1,0 +1,657 @@
+name: build SkiaSharp.NativeAssets.Linux ppc64le
+
+on:
+  workflow_dispatch:
+    inputs:
+      skiasharp_ref:
+        description: "SkiaSharp version/ref, e.g. v3.119.2, 3.119.2, main"
+        required: true
+        default: "v3.119.2"
+      publish_github_packages:
+        description: "Publish to GitHub Packages"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13
+
+    env:
+      RID: linux-ppc64le
+      SKIA_CPU: ppc64
+      CC: powerpc64le-linux-gnu-gcc
+      CXX: powerpc64le-linux-gnu-g++-wrap
+      AR: powerpc64le-linux-gnu-ar
+      STRIP: powerpc64le-linux-gnu-strip
+      PKG_ID: SkiaSharp.NativeAssets.Linux
+      DOTNET_ROOT: /root/.dotnet
+      PATH: /root/.dotnet:/root/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -eux
+
+          dpkg --add-architecture ppc64el
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            python3 \
+            python3-pip \
+            build-essential \
+            clang \
+            lld \
+            ninja-build \
+            cmake \
+            pkg-config \
+            gcc-powerpc64le-linux-gnu \
+            g++-powerpc64le-linux-gnu \
+            libc6-dev-ppc64el-cross \
+            zip \
+            unzip \
+            file \
+            binutils \
+            findutils \
+            tar \
+            gzip \
+            libicu-dev \
+            libicu-dev:ppc64el \
+            zlib1g-dev:ppc64el \
+            libpng-dev:ppc64el \
+            libfontconfig1-dev:ppc64el \
+            libfreetype-dev:ppc64el \
+            libharfbuzz-dev:ppc64el \
+            libgl1-mesa-dev:ppc64el \
+            libegl1-mesa-dev:ppc64el \
+            libx11-dev:ppc64el \
+            libxext-dev:ppc64el \
+            libxrandr-dev:ppc64el \
+            libxinerama-dev:ppc64el \
+            libxcursor-dev:ppc64el \
+            libxi-dev:ppc64el
+
+          mkdir -p /usr/powerpc64le-linux-gnu/lib
+          find /usr/lib/powerpc64le-linux-gnu /lib/powerpc64le-linux-gnu /usr/lib/powerpc64el-linux-gnu /lib/powerpc64el-linux-gnu /usr/lib/ppc64el-linux-gnu /lib/ppc64el-linux-gnu \
+            -name 'lib*.so*' -exec ln -sf {} /usr/powerpc64le-linux-gnu/lib/ \; 2>/dev/null || true
+
+          cat > /usr/local/bin/powerpc64le-linux-gnu-g++-wrap <<'EOF'
+          #!/usr/bin/env bash
+          set -e
+
+          real_cxx=/usr/bin/powerpc64le-linux-gnu-g++
+
+          is_skiasharp_link=0
+          for arg in "$@"; do
+            if [ "$arg" = "libSkiaSharp.so" ]; then
+              is_skiasharp_link=1
+              break
+            fi
+          done
+
+          if [ "$is_skiasharp_link" = "1" ]; then
+            new_args=()
+            inserted=0
+
+            for arg in "$@"; do
+              if [ "$arg" = "-Wl,--end-group" ] && [ "$inserted" = "0" ]; then
+                for round in 1 2 3; do
+                  for lib in \
+                    libicu.a \
+                    obj/third_party/icu/libicu.a
+                  do
+                    if [ -f "$lib" ]; then
+                      new_args+=("$lib")
+                    fi
+                  done
+                done
+                inserted=1
+              fi
+
+              new_args+=("$arg")
+            done
+
+            echo "=== wrapped libSkiaSharp.so link args probe ==="
+            printf '%q\n' "${new_args[@]}" | grep -E 'libicu|libSkiaSharp|start-group|end-group' || true
+
+            exec "$real_cxx" "${new_args[@]}"
+          else
+            exec "$real_cxx" "$@"
+          fi
+          EOF
+          chmod +x /usr/local/bin/powerpc64le-linux-gnu-g++-wrap
+
+          file /usr/powerpc64le-linux-gnu/lib/libfontconfig.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libGLESv2.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libEGL.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libexpat.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libharfbuzz.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libharfbuzz-subset.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libpng16.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libicuuc.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libicui18n.so* || true
+          file /usr/powerpc64le-linux-gnu/lib/libicudata.so* || true
+
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          chmod +x dotnet-install.sh
+          ./dotnet-install.sh --channel 10.0.1xx --quality daily --install-dir "$DOTNET_ROOT"
+          dotnet --info
+
+      - name: Resolve SkiaSharp ref and version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REF="${{ inputs.skiasharp_ref }}"
+          if [[ "$REF" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            GIT_REF="v$REF"
+            VERSION="$REF"
+          elif [[ "$REF" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            GIT_REF="$REF"
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            GIT_REF="$REF"
+            VERSION="0.0.0-${REF//\//-}"
+          fi
+
+          PACKAGE_VERSION="$VERSION"
+
+          echo "git_ref=$GIT_REF" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Clone SkiaSharp
+        run: |
+          git clone --recursive --branch "${{ steps.meta.outputs.git_ref }}" \
+            https://github.com/mono/SkiaSharp.git src
+
+      - name: GN/Ninja cross build
+        working-directory: src
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          GN_ARGS='
+            is_debug=false
+            is_official_build=true
+            target_os="linux"
+            target_cpu="ppc64"
+            cc="powerpc64le-linux-gnu-gcc"
+            cxx="powerpc64le-linux-gnu-g++-wrap"
+            ar="powerpc64le-linux-gnu-ar"
+            skia_enable_tools=false
+            skia_enable_gpu=true
+            skia_use_vulkan=true
+            skia_use_egl=true
+            skia_use_x11=true
+            skia_use_gl=true
+            skia_use_fontconfig=true
+            skia_use_freetype=true
+            skia_use_system_freetype2=false
+            skia_use_system_libjpeg_turbo=false
+            skia_use_system_libpng=false
+            skia_use_system_libwebp=false
+            skia_use_system_zlib=false
+            skia_use_system_icu=false
+            extra_cflags=["-fPIC"]
+            extra_cflags_cc=["-fPIC"]
+            extra_ldflags=[
+              "-L/usr/powerpc64le-linux-gnu/lib",
+              "-Wl,-rpath-link,/usr/powerpc64le-linux-gnu/lib"
+            ]
+          '
+
+          cd externals/skia
+          python3 tools/git-sync-deps
+
+          if [ ! -f third_party/externals/icu/scripts/make_data_assembly.py ]; then
+            rm -rf third_party/externals/icu
+            git clone --depth 1 https://chromium.googlesource.com/chromium/deps/icu.git third_party/externals/icu
+          fi
+
+          test -f third_party/externals/icu/scripts/make_data_assembly.py
+
+          echo "=== source grep for copyInvariantChars ==="
+          grep -R "copyInvariantChars" -n third_party/externals/icu/source || true
+
+          echo "=== source grep for FixedString / ByteSink ==="
+          grep -R "class FixedString\|struct FixedString\|using FixedString\|typedef.*FixedString\|FixedString" -n third_party/externals/icu/source || true
+          grep -R "class ByteSink\|struct ByteSink\|ByteSink" -n third_party/externals/icu/source/common third_party/externals/icu/source/i18n || true
+
+          echo "=== source grep headers/cpps around copyInvariantChars ==="
+          find third_party/externals/icu/source \
+            \( -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \) \
+            -print | while read -r f; do
+              if grep -q "copyInvariantChars" "$f"; then
+                echo "--- $f"
+                grep -n -C 5 "copyInvariantChars" "$f" || true
+              fi
+            done
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          print("=== libpng GN candidates ===")
+          gn_files = list(Path(".").rglob("BUILD.gn")) + list(Path(".").rglob("*.gni"))
+          for p in gn_files:
+              try:
+                  text = p.read_text()
+              except UnicodeDecodeError:
+                  continue
+
+              if "pngrutil.c" in text or "pngread.c" in text or "png.c" in text or "libpng" in text:
+                  print("candidate:", p)
+                  for i, line in enumerate(text.splitlines(), 1):
+                      if (
+                          "pngrutil.c" in line
+                          or "pngread.c" in line
+                          or "png.c" in line
+                          or "powerpc_init.c" in line
+                          or "filter_vsx_intrinsics.c" in line
+                          or "PNG_POWERPC_VSX_OPT" in line
+                      ):
+                          print(f"{p}:{i}: {line}")
+
+          png_gn = Path("third_party/libpng/BUILD.gn")
+          if png_gn.exists():
+              lines = png_gn.read_text().splitlines()
+              out = []
+              patched = False
+              already = any("filter_vsx_intrinsics.c" in line for line in lines)
+
+              for line in lines:
+                  out.append(line)
+                  if not already and "pngrutil.c" in line:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      out.append(f'{indent}"//third_party/externals/libpng/powerpc/powerpc_init.c",')
+                      out.append(f'{indent}"//third_party/externals/libpng/powerpc/filter_vsx_intrinsics.c",')
+                      patched = True
+
+              text = "\n".join(out) + "\n"
+
+              if "PNG_POWERPC_VSX_OPT=2" not in text:
+                  text = text.replace(
+                      "defines = [",
+                      'defines = [\n    "PNG_POWERPC_VSX_OPT=2",',
+                      1,
+                  )
+
+              png_gn.write_text(text)
+
+              if patched:
+                  print("patched bundled libpng powerpc vsx sources")
+              elif already:
+                  print("bundled libpng powerpc vsx sources already patched")
+              else:
+                  raise SystemExit("libpng pngrutil.c marker missing")
+          else:
+              raise SystemExit("third_party/libpng/BUILD.gn not found")
+
+          print("=== after libpng patch file dump ===")
+          for p in gn_files:
+              try:
+                  text = p.read_text()
+              except UnicodeDecodeError:
+                  continue
+
+              if "pngrutil.c" in text or "powerpc_init.c" in text or "filter_vsx_intrinsics.c" in text or "PNG_POWERPC_VSX_OPT" in text:
+                  print("candidate:", p)
+                  for i, line in enumerate(text.splitlines(), 1):
+                      if (
+                          "pngrutil.c" in line
+                          or "pngread.c" in line
+                          or "png.c" in line
+                          or "powerpc_init.c" in line
+                          or "filter_vsx_intrinsics.c" in line
+                          or "PNG_POWERPC_VSX_OPT" in line
+                      ):
+                          print(f"{p}:{i}: {line}")
+
+          needed_names = [
+              "charstr.cpp",
+              "charstrmap.cpp",
+              "fixedstring.cpp",
+              "lsr.cpp",
+              "loclikelysubtags.cpp",
+              "emojiprops.cpp",
+              "lstmbe.cpp",
+              "lstmdata.cpp",
+              "uvector.cpp",
+              "uvectr32.cpp",
+              "unistr.cpp",
+              "uniset.cpp",
+              "uset.cpp",
+              "uhash.cpp",
+              "uresbund.cpp",
+              "resbund.cpp",
+              "udata.cpp",
+              "utext.cpp",
+              "umemory.cpp",
+              "putil.cpp",
+              "uobject.cpp",
+              "locid.cpp",
+              "locmap.cpp",
+              "bytestream.cpp",
+              "filteredbrk.cpp",
+              "brkeng.cpp",
+              "dictbe.cpp",
+              "rbbi.cpp",
+              "rbbidata.cpp",
+              "rbbinode.cpp",
+              "rbbirb.cpp",
+              "rbbiscan.cpp",
+              "rbbisetb.cpp",
+              "rbbistbl.cpp",
+              "rbbitblb.cpp",
+              "rbbi_cache.cpp",
+          ]
+
+          common = Path("third_party/externals/icu/source/common")
+          existing = []
+          for name in needed_names:
+              p = common / name
+              if p.exists():
+                  existing.append(f"//{p.as_posix()}")
+
+          print("ICU extra sources:")
+          for p in existing:
+              print(p)
+
+          markers = [
+              "loclikely.cpp",
+              "uloc_keytype.cpp",
+              "characterproperties.cpp",
+              "brkeng.cpp",
+          ]
+
+          files = list(Path(".").rglob("BUILD.gn")) + list(Path(".").rglob("*.gni"))
+
+          candidates = []
+          for gn in files:
+              try:
+                  text = gn.read_text()
+              except UnicodeDecodeError:
+                  continue
+              if any(m in text for m in markers):
+                  candidates.append(gn)
+
+          if not candidates:
+              print("No direct BUILD.gn/.gni target containing ICU marker sources found.")
+              print("Possible ICU/skunicode files:")
+              for gn in files:
+                  try:
+                      text = gn.read_text()
+                  except UnicodeDecodeError:
+                      continue
+                  low = text.lower()
+                  if "icu" in low or "skunicode" in low:
+                      print("candidate:", gn)
+              raise SystemExit(1)
+
+          patched = False
+
+          for gn in candidates:
+              text = gn.read_text()
+              pos = 0
+
+              while True:
+                  insert_at = text.find("sources = [", pos)
+                  if insert_at == -1:
+                      break
+
+                  end = text.find("]", insert_at)
+                  if end == -1:
+                      break
+
+                  block = text[insert_at:end]
+                  if any(m in block for m in markers):
+                      additions = ""
+                      for src in existing:
+                          name = Path(src).name
+                          if src not in text and name not in block:
+                              additions += f'    "{src}",\n'
+
+                      if additions:
+                          text = text[:end] + additions + text[end:]
+                          gn.write_text(text)
+                          print(f"patched {gn}")
+                          patched = True
+                      else:
+                          print(f"{gn} already contains requested ICU sources")
+                          patched = True
+
+                      break
+
+                  pos = end + 1
+
+              if patched:
+                  break
+
+          if not patched:
+              print("Found candidate files, but no matching sources block was patched.")
+              for gn in candidates:
+                  print("candidate:", gn)
+              raise SystemExit(1)
+          PY
+
+          python3 bin/fetch-gn
+          ./bin/gn gen ../../out/linux-ppc64le --args="$GN_ARGS"
+
+          echo "=== probe generated ninja files ==="
+          grep -R "powerpc_init.c" -n ../../out/linux-ppc64le || true
+          grep -R "filter_vsx_intrinsics.c" -n ../../out/linux-ppc64le || true
+          grep -R "png_init_filter_functions_vsx" -n ../../out/linux-ppc64le || true
+          grep -R "loclikelysubtags.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "likelysubtags.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "charstr.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "charstrmap.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "fixedstring.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "copyInvariantChars" -n ../../out/linux-ppc64le || true
+          grep -R "emojiprops.cpp" -n ../../out/linux-ppc64le || true
+          grep -R "lstmbe.cpp" -n ../../out/linux-ppc64le || true
+
+          echo "=== probe response files ==="
+          find ../../out/linux-ppc64le -name '*.rsp' -print | while read -r f; do
+            if grep -qE 'powerpc_init|filter_vsx|png_init_filter_functions_vsx|loclikelysubtags|likelysubtags|charstr|charstrmap|fixedstring|copyInvariantChars|emojiprops|lstmbe|loclikely|uloc_keytype|characterproperties' "$f"; then
+              echo "--- $f"
+              grep -E 'powerpc_init|filter_vsx|png_init_filter_functions_vsx|loclikelysubtags|likelysubtags|charstr|charstrmap|fixedstring|copyInvariantChars|emojiprops|lstmbe|loclikely|uloc_keytype|characterproperties' "$f" || true
+            fi
+          done
+
+          echo "=== probe bundled libpng / icu BUILD files ==="
+          grep -R "powerpc_init.c\|filter_vsx_intrinsics.c\|PNG_POWERPC_VSX_OPT" -n third_party/libpng third_party/externals/libpng || true
+          grep -R "pngrutil.c\|pngread.c\|png.c" -n . --include='BUILD.gn' --include='*.gni' || true
+          grep -R "loclikelysubtags.cpp\|likelysubtags.cpp\|charstr.cpp\|charstrmap.cpp\|fixedstring.cpp\|copyInvariantChars\|emojiprops.cpp\|lstmbe.cpp\|loclikely.cpp\|uloc_keytype.cpp\|characterproperties.cpp" -n . --include='BUILD.gn' --include='*.gni' || true
+
+          echo "=== probe ninja targets ==="
+          ninja -C ../../out/linux-ppc64le -t targets all | grep -E 'libpng|icu|skunicode|SkiaSharp|HarfBuzzSharp' || true
+
+          echo "=== prebuild key static libraries for symbol probe ==="
+          ninja -C ../../out/linux-ppc64le libpng.a libicu.a libskunicode.a -j1 -v || true
+
+          echo "=== locate key static libraries ==="
+          find ../../out/linux-ppc64le \
+            \( -name 'libpng.a' -o -name 'libicu.a' -o -name 'libskunicode.a' \) \
+            -print -exec file {} \; || true
+
+          echo "=== archive members probe ==="
+          for a in \
+            ../../out/linux-ppc64le/libpng.a \
+            ../../out/linux-ppc64le/libicu.a \
+            ../../out/linux-ppc64le/libskunicode.a
+          do
+            if [ -f "$a" ]; then
+              echo "--- ar t $a"
+              powerpc64le-linux-gnu-ar t "$a" | grep -E 'powerpc|filter_vsx|charstr|charstrmap|fixedstring|loclikely|loclikelysubtags|emojiprops|lstmbe|uloc_keytype|characterproperties' || true
+            else
+              echo "missing archive: $a"
+            fi
+          done
+
+          echo "=== nm probe libpng defined symbols ==="
+          if [ -f ../../out/linux-ppc64le/libpng.a ]; then
+            powerpc64le-linux-gnu-nm -A -C ../../out/linux-ppc64le/libpng.a \
+              | grep -E 'png_init_filter_functions_vsx|png_read_filter_row' || true
+          fi
+
+          echo "=== nm probe libicu defined/undefined symbols ==="
+          if [ -f ../../out/linux-ppc64le/libicu.a ]; then
+            echo "--- libicu defined"
+            powerpc64le-linux-gnu-nm -A -C --defined-only ../../out/linux-ppc64le/libicu.a \
+              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|FixedString|ByteSink' || true
+
+            echo "--- libicu undefined"
+            powerpc64le-linux-gnu-nm -A -C -u ../../out/linux-ppc64le/libicu.a \
+              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|FixedString|ByteSink' || true
+          fi
+
+          echo "=== nm probe libskunicode symbols ==="
+          if [ -f ../../out/linux-ppc64le/libskunicode.a ]; then
+            echo "--- libskunicode defined"
+            powerpc64le-linux-gnu-nm -A -C --defined-only ../../out/linux-ppc64le/libskunicode.a \
+              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|ulocimp_addLikelySubtags|png_init_filter_functions_vsx|FixedString|ByteSink' || true
+
+            echo "--- libskunicode undefined"
+            powerpc64le-linux-gnu-nm -A -C -u ../../out/linux-ppc64le/libskunicode.a \
+              | grep -E 'copyInvariantChars|LikelySubtags|EmojiProps|CreateLSTM|DeleteLSTM|LSTMBreakEngine|UnicodeString|UVector32|png_init_filter_functions_vsx|FixedString|ByteSink' || true
+          fi
+
+          echo "=== nm probe all objects for provider ==="
+          provider_found=0
+          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+            if powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null | grep -qE 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx'; then
+              echo "--- provider object: $o"
+              powerpc64le-linux-gnu-nm -C --defined-only "$o" \
+                | grep -E 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx' || true
+            fi
+          done
+
+          echo "=== direct provider count for copyInvariantChars ==="
+          copy_provider_count="$(
+            {
+              find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+                powerpc64le-linux-gnu-nm -C --defined-only "$o" 2>/dev/null \
+                  | grep -E 'copyInvariantChars' \
+                  | sed "s#^#$o: #" || true
+              done
+            } | tee /tmp/copyInvariantChars.providers | wc -l
+          )"
+          cat /tmp/copyInvariantChars.providers || true
+          echo "copyInvariantChars provider count: ${copy_provider_count}"
+          if [ "${copy_provider_count}" = "0" ]; then
+            echo "NO copyInvariantChars provider found in generated object files"
+          fi
+
+          echo "=== nm probe all objects for unresolved refs ==="
+          find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+            if powerpc64le-linux-gnu-nm -C -u "$o" 2>/dev/null | grep -qE 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx'; then
+              echo "--- undefined object: $o"
+              powerpc64le-linux-gnu-nm -C -u "$o" \
+                | grep -E 'copyInvariantChars|LikelySubtags::getSingleton|makeMaximizedLsrFrom|png_init_filter_functions_vsx' || true
+            fi
+          done
+
+          echo "=== direct undefined count for copyInvariantChars ==="
+          copy_undefined_count="$(
+            {
+              find ../../out/linux-ppc64le/obj -name '*.o' -print | while read -r o; do
+                powerpc64le-linux-gnu-nm -C -u "$o" 2>/dev/null \
+                  | grep -E 'copyInvariantChars' \
+                  | sed "s#^#$o: #" || true
+              done
+            } | tee /tmp/copyInvariantChars.undefined | wc -l
+          )"
+          cat /tmp/copyInvariantChars.undefined || true
+          echo "copyInvariantChars undefined count: ${copy_undefined_count}"
+
+          echo "=== libSkiaSharp response file probe ==="
+          if [ -f ../../out/linux-ppc64le/libSkiaSharp.so.rsp ]; then
+            tr ' ' '\n' < ../../out/linux-ppc64le/libSkiaSharp.so.rsp \
+              | grep -E 'libpng|libicu|libskunicode|png|icu|skunicode|charstr|charstrmap|fixedstring|copyInvariantChars|loclikely|loclikelysubtags|emojiprops|lstmbe' || true
+          else
+            echo "libSkiaSharp.so.rsp not found yet"
+          fi
+
+          echo "=== final build ==="
+          ninja -C ../../out/linux-ppc64le -j1 -v
+
+      - name: Find libSkiaSharp.so
+        id: findlib
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src -name 'libSkiaSharp.so' -type f -print
+
+          LIB="$(find src -name 'libSkiaSharp.so' -type f | head -n 1)"
+          if [[ -z "$LIB" ]]; then
+            echo "libSkiaSharp.so not found"
+            exit 1
+          fi
+
+          mkdir -p "pkg/runtimes/${RID}/native"
+          cp "$LIB" "pkg/runtimes/${RID}/native/libSkiaSharp.so"
+          ${STRIP} "pkg/runtimes/${RID}/native/libSkiaSharp.so" || true
+
+          file "pkg/runtimes/${RID}/native/libSkiaSharp.so"
+          powerpc64le-linux-gnu-readelf -h "pkg/runtimes/${RID}/native/libSkiaSharp.so"
+
+      - name: Create NuGet package project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > pkg/${PKG_ID}.csproj <<EOF
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net6.0</TargetFramework>
+              <PackageId>${PKG_ID}</PackageId>
+              <Version>${{ steps.meta.outputs.package_version }}</Version>
+              <Authors>Repobot</Authors>
+              <Company>${{ github.repository_owner }}</Company>
+              <PackageLicenseExpression>MIT</PackageLicenseExpression>
+              <PackageProjectUrl>https://github.com/mono/SkiaSharp</PackageProjectUrl>
+              <Description>Unofficial SkiaSharp Linux native assets for linux-ppc64le, built from mono/SkiaSharp ${{ steps.meta.outputs.git_ref }}.</Description>
+              <PackageTags>skiasharp skia native linux ppc64le powerpc</PackageTags>
+              <RepositoryType>git</RepositoryType>
+              <RepositoryUrl>https://github.com/mono/SkiaSharp</RepositoryUrl>
+              <RepositoryCommit>$(cd src && git rev-parse HEAD)</RepositoryCommit>
+              <IncludeBuildOutput>false</IncludeBuildOutput>
+              <NoBuild>true</NoBuild>
+            </PropertyGroup>
+
+            <ItemGroup>
+              <None Include="runtimes/linux-ppc64le/native/libSkiaSharp.so"
+                    Pack="true"
+                    PackagePath="runtimes/linux-ppc64le/native/libSkiaSharp.so" />
+            </ItemGroup>
+          </Project>
+          EOF
+
+          cd pkg
+          dotnet pack ${PKG_ID}.csproj \
+            --configuration Release \
+            --output ../artifacts \
+            --verbosity normal
+
+      - name: Upload nupkg artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: SkiaSharp.NativeAssets.Linux-${{ steps.meta.outputs.package_version }}
+          path: artifacts/*.nupkg
+
+      - name: Publish to GitHub Packages
+        if: inputs.publish_github_packages == true
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --api-key "${{ secrets.GITHUB_TOKEN }}"

@@ -382,10 +382,27 @@ jobs:
 
           mkdir -p "pkg/runtimes/${RID}/native"
           cp "$LIB" "pkg/runtimes/${RID}/native/libSkiaSharp.so"
-          ${STRIP} "pkg/runtimes/${RID}/native/libSkiaSharp.so" || true
 
           file "pkg/runtimes/${RID}/native/libSkiaSharp.so"
           powerpc64le-linux-gnu-readelf -h "pkg/runtimes/${RID}/native/libSkiaSharp.so"
+
+          echo "==== required symbol check ===="
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_8888'
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_565'
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_imageinfo_new'
+
+          ${STRIP} "pkg/runtimes/${RID}/native/libSkiaSharp.so" || true
+
+          echo "==== symbol check after strip ===="
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_8888'
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_colortype_get_default_565'
+          powerpc64le-linux-gnu-nm -D "pkg/runtimes/${RID}/native/libSkiaSharp.so" \
+            | grep 'sk_imageinfo_new'
 
       - name: Create NuGet package project
         shell: bash
